@@ -1,0 +1,174 @@
+# Virtual Environments
+.venv/
+.venv-guard/
+venv/
+env/
+ENV/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Testing
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# pyenv
+.python-version
+
+# pipenv
+Pipfile.lock
+
+# PEP 582
+__pypackages__/
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath parsed files
+*.sage.py
+
+# Environments
+.env
+.venv
+ENV/
+env/
+.env.local
+.env.*.local
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+repomix_output.xml
+original_docs/
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# pytype static type analyzer
+.pytype/
+
+# Cython debug symbols
+cython_debug/
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# History files
+.history/
+
+# Temporary files
+*.tmp
+*.temp
+temp/
+tmp/
+
+# AI/ML specific
+.chroma/
+.qodo/
+mlruns/
+wandb/
+
+# Guardrails
+.guardrailsrc
+config.py
+
+# CrewAI
+crew_outputs/
+
+# Mutmut
+.mutmut-cache
+mutmut-results.json
+
+# Coverage reports
+coverage/
+htmlcov/
+
+# Documentation builds
+docs/_build/
+docs/build/
+
+# --- Coding_System custom noise exclusions ---
+# Evidence and test artifacts
+docs/02_Execution_framework/01_Phase0_guardrails/02_task_reports/
+*.sarif
+*.txt
+temp_secret.py
+
+# GitHub Actions/CI artifacts
+gitleaks.sarif
+
+# Misc noisy folders
+.repomix/
+.qodo/
+.archived_repo/
+.history/
+.DS_Store
