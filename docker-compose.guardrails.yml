@@ -1,0 +1,130 @@
+# yaml-language-server: $schema=https://json.schemastore.org/compose-spec.json
+version: "3.9"
+name: guardrails
+
+# This compose file is designed for local + CI use. It relies on an env file with pinned digests:
+#   GITLEAKS_IMAGE=...
+#   TRUFFLEHOG_IMAGE=...
+#   SEMGREP_IMAGE=...
+#   TRIVY_IMAGE=...
+#   CHECKOV_IMAGE=...
+#   SYFT_IMAGE=...
+#   GRYPE_IMAGE=...
+#   SCORECARD_IMAGE=...
+#   COSIGN_IMAGE=...
+#   ZAP_IMAGE=...
+#   OTEL_COLLECTOR_IMAGE=...
+#   HADOLINT_IMAGE=...
+#   OTEL_CLI_IMAGE=...
+
+x-repo-mount: &repo_mount
+  - ./:/repo:ro
+  - ./reports:/out
+
+x-env-common: &env_common
+  TZ: UTC
+
+services:
+  gitleaks:
+    image: "${GITLEAKS_IMAGE:?define GITLEAKS_IMAGE}"
+    environment: *env_common
+    command: detect --source /repo --report-path /out/gitleaks.json --redact --exit-code 1 --no-banner
+    working_dir: /repo
+    volumes: *repo_mount
+    profiles: ["security","precommit"]
+
+  trufflehog:
+    image: "${TRUFFLEHOG_IMAGE:?define TRUFFLEHOG_IMAGE}"
+    environment: *env_common
+    command: filesystem /repo --json --report /out/trufflehog.json --fail
+    working_dir: /repo
+    volumes: *repo_mount
+    profiles: ["security","precommit"]
+
+  semgrep:
+    image: "${SEMGREP_IMAGE:?define SEMGREP_IMAGE}"
+    environment: *env_common
+    command: ci --config auto --json --output=/out/semgrep.json
+    working_dir: /repo
+    volumes: *repo_mount
+    profiles: ["security","sast","ci"]
+
+  trivy-fs:
+    image: "${TRIVY_IMAGE:?define TRIVY_IMAGE}"
+    environment: *env_common
+    command: fs --scanners vuln,secret,misconfig --exit-code 1 --format json --output /out/trivy-fs.json /repo
+    working_dir: /repo
+    volumes: *repo_mount
+    profiles: ["security","vuln","ci"]
+
+  checkov:
+    image: "${CHECKOV_IMAGE:?define CHECKOV_IMAGE}"
+    environment: *env_common
+    command: -d /repo -o json --output-file-path /out/checkov.json
+    working_dir: /repo
+    volumes: *repo_mount
+    profiles: ["security","iac","ci"]
+
+  hadolint:
+    image: "${HADOLINT_IMAGE:?define HADOLINT_IMAGE}"
+    environment: *env_common
+    command: sh -lc "hadolint -f json Dockerfile* > /out/hadolint.json || true"
+    working_dir: /repo
+    volumes: *repo_mount
+    profiles: ["security","iac","ci"]
+
+  syft:
+    image: "${SYFT_IMAGE:?define SYFT_IMAGE}"
+    environment: *env_common
+    command: packages dir:/repo -o cyclonedx-json=/out/sbom.cdx.json
+    working_dir: /repo
+    volumes: *repo_mount
+    profiles: ["supplychain","ci"]
+
+  grype:
+    image: "${GRYPE_IMAGE:?define GRYPE_IMAGE}"
+    environment: *env_common
+    depends_on: ["syft"]
+    command: sbom:/out/sbom.cdx.json -o json --fail-on high --file /out/grype.json
+    working_dir: /repo
+    volumes: *repo_mount
+    profiles: ["supplychain","ci"]
+
+  scorecard:
+    image: "${SCORECARD_IMAGE:?define SCORECARD_IMAGE}"
+    environment: *env_common
+    command: >
+      /scorecard --repo=${SCORECARD_REPO:?set github.com/OWNER/REPO}
+                 --checks=All --format=json --show-details
+                 --out=/out/scorecard.json
+    volumes: *repo_mount
+    profiles: ["supplychain","ci","manual"]
+
+  cosign:
+    image: "${COSIGN_IMAGE:?define COSIGN_IMAGE}"
+    environment:
+      <<: *env_common
+      COSIGN_EXPERIMENTAL: "1"
+    command: sh -lc "cosign version && echo 'Use cosign sign/verify in CI'"
+    profiles: ["supplychain","manual"]
+
+  zap-baseline:
+    image: "${ZAP_IMAGE:?define ZAP_IMAGE}"
+    environment: *env_common
+    command: >
+      zap-baseline.py -t ${TARGET_URL:?set TARGET_URL}
+                      -J /out/zap.json -w /out/zap.md -r /out/zap.html
+                      -m 5
+    volumes: *repo_mount
+    profiles: ["security","dast"]
+
+  otel-collector:
+    image: "${OTEL_COLLECTOR_IMAGE:?define OTEL_COLLECTOR_IMAGE}"
+    environment: *env_common
+    command: ["--config", "/etc/otelcol/config.yaml"]
+    volumes:
+      - ./ops/otel/config.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+    profiles: ["observability","ci"]
