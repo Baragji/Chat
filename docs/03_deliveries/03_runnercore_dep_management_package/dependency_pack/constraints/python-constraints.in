@@ -1,0 +1,6 @@
+# Sources for pip-tools to compile into constraints/python-constraints.txt
+# Replace with your actual top-level deps
+fastapi>=0.115
+pydantic>=2.9
+uvicorn>=0.30
+numpy>=2.1
