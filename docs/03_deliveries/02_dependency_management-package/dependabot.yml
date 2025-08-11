@@ -1,0 +1,33 @@
+version: 2
+updates:
+  # Keep GitHub Actions up to date
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels: ["deps", "github-actions"]
+    open-pull-requests-limit: 5
+
+  # Security-focused PRs for npm (version updates run via Renovate)
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels: ["deps", "security"]
+    open-pull-requests-limit: 5
+
+  # Security-focused PRs for Python (version updates run via Renovate)
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels: ["deps", "security"]
+    open-pull-requests-limit: 5
+
+  # Monitor Docker registries for vulnerabilities (version bumps handled by Renovate)
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels: ["deps", "security"]
+    open-pull-requests-limit: 5

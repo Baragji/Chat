@@ -1,0 +1,167 @@
+name: guardrails
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  guardrails:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@v2
+        with:
+          disable-telemetry: true
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx (for imagetools/inspect)
+        uses: docker/setup-buildx-action@v3
+
+      - name: Prepare folders
+        run: |
+          mkdir -p reports ops/otel ci-input
+
+      - name: Resolve image digests and write .env.guardrails
+        shell: bash
+        run: |
+          set -euo pipefail
+          function pin() { 
+            local ref="$1"; 
+            docker pull "$ref" >/dev/null
+            local digest="$(docker inspect --format='{{index .RepoDigests 0}}' "$ref" | awk -F@ '{print $2}')"
+            echo "$ref@$digest"
+          }
+          # Pinned versions (tags) — resolve to digests:
+          GITLEAKS_REF="zricethezav/gitleaks:v8.18.0"
+          TRUFFLEHOG_REF="trufflesecurity/trufflehog:v3.63.2"
+          SEMGREP_REF="semgrep/semgrep:1.50.0"
+          TRIVY_REF="aquasec/trivy:0.51.4"
+          CHECKOV_REF="bridgecrew/checkov:latest"
+          SYFT_REF="anchore/syft:latest"
+          GRYPE_REF="anchore/grype:latest"
+          SCORECARD_REF="gcr.io/openssf/scorecard:stable"
+          COSIGN_REF="ghcr.io/sigstore/cosign:v2.4.1"
+          ZAP_REF="owasp/zap2docker-stable:latest"
+          OTEL_REF="otel/opentelemetry-collector:latest"
+          HADOLINT_REF="hadolint/hadolint:latest"
+
+          cat > .env.guardrails <<EOF
+          GITLEAKS_IMAGE=$(pin "$GITLEAKS_REF")
+          TRUFFLEHOG_IMAGE=$(pin "$TRUFFLEHOG_REF")
+          SEMGREP_IMAGE=$(pin "$SEMGREP_REF")
+          TRIVY_IMAGE=$(pin "$TRIVY_REF")
+          CHECKOV_IMAGE=$(pin "$CHECKOV_REF")
+          SYFT_IMAGE=$(pin "$SYFT_REF")
+          GRYPE_IMAGE=$(pin "$GRYPE_REF")
+          SCORECARD_IMAGE=$(pin "$SCORECARD_REF")
+          COSIGN_IMAGE=$(pin "$COSIGN_REF")
+          ZAP_IMAGE=$(pin "$ZAP_REF")
+          OTEL_COLLECTOR_IMAGE=$(pin "$OTEL_REF")
+          HADOLINT_IMAGE=$(pin "$HADOLINT_REF")
+          EOF
+
+          echo "Pinned images:"
+          cat .env.guardrails
+
+      - name: Write minimal OTel Collector config
+        run: |
+          cat > ops/otel/config.yaml <<'YAML'
+          receivers:
+            otlp:
+              protocols:
+                grpc:
+                http:
+          processors:
+            batch: {}
+          exporters:
+            logging: {}
+          service:
+            pipelines:
+              traces:
+                receivers: [otlp]
+                processors: [batch]
+                exporters: [logging]
+          YAML
+
+      - name: Precommit secrets scan (Gitleaks + TruffleHog)
+        run: |
+          docker compose --env-file .env.guardrails --profile precommit up --exit-code-from gitleaks --abort-on-container-exit || exit 1
+          docker compose --env-file .env.guardrails --profile precommit up --exit-code-from trufflehog --abort-on-container-exit || exit 1
+
+      - name: SAST (Semgrep)
+        run: docker compose --env-file .env.guardrails --profile sast up --exit-code-from semgrep --abort-on-container-exit
+
+      - name: IaC, Dockerfile, and FS scans (Checkov, Hadolint, Trivy)
+        run: |
+          docker compose --env-file .env.guardrails --profile iac up --exit-code-from checkov --abort-on-container-exit || exit 1
+          docker compose --env-file .env.guardrails --profile iac up --exit-code-from hadolint --abort-on-container-exit || true
+          docker compose --env-file .env.guardrails --profile vuln up --exit-code-from trivy-fs --abort-on-container-exit || exit 1
+
+      - name: SBOM + Vulnerabilities from SBOM (Syft + Grype)
+        run: |
+          docker compose --env-file .env.guardrails --profile supplychain up --exit-code-from syft --abort-on-container-exit
+          docker compose --env-file .env.guardrails --profile supplychain up --exit-code-from grype --abort-on-container-exit
+
+      - name: (Optional) DAST Baseline (set TARGET_URL to enable)
+        if: ${{ env.TARGET_URL != '' }}
+        env:
+          TARGET_URL: ${{ env.TARGET_URL }}
+        run: docker compose --env-file .env.guardrails --profile dast up --exit-code-from zap-baseline --abort-on-container-exit
+
+      - name: Build CI inputs for OPA policies
+        run: |
+          jq -n '{"build":{"sbom_attached":(inputs|length>0)}}' reports/sbom.cdx.json > ci-input/build.json || echo '{"build":{"sbom_attached":false}}' > ci-input/build.json
+          # Add provenance/cosign placeholders; policy_mode 'dev' allows missing in non-release runs
+          jq '.build += {"slsa_provenance":false,"cosign_verify":"SKIPPED","policy_mode":"dev"}' ci-input/build.json > ci-input/tmp && mv ci-input/tmp ci-input/build.json
+          # Budget input (replace with real FOCUS extract later)
+          echo '{"focus":{"weekly_forecast_usd":0}}' > ci-input/focus.json
+          # Observability input (preview env trace IDs). Replace with real probe later.
+          echo '{"preview_env":{"last_5min_trace_ids":["demo-trace-id"]}}' > ci-input/observability.json
+
+      - name: Run OPA Conftest (policy checks)
+        uses: highb/conftest-action@v1.0.0
+        with:
+          args: 'test -p opa ci-input/*.json -o table'
+
+      - name: Upload reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: guardrails-reports
+          path: |
+            reports/
+            ci-input/
+            .env.guardrails
+
+  scorecard:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      id-token: write
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@v2
+        with:
+          disable-telemetry: true
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run OpenSSF Scorecard
+        uses: ossf/scorecard-action@v2.4.2
+        with:
+          results_file: scorecard.sarif
+          results_format: sarif
+          publish_results: false
+
+      - name: Upload Scorecard SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: scorecard.sarif

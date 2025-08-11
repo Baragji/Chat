@@ -1,0 +1,144 @@
+# yaml-language-server: $schema=https://json.schemastore.org/compose-spec.json
+version: "3.9"
+name: guardrails
+
+# This compose file expects an env file with pinned digests, e.g. `.env.guardrails`:
+#   GITLEAKS_IMAGE=zricethezav/gitleaks@sha256:...
+#   TRUFFLEHOG_IMAGE=trufflesecurity/trufflehog@sha256:...
+#   SEMGREP_IMAGE=semgrep/semgrep@sha256:...
+#   TRIVY_IMAGE=aquasec/trivy@sha256:...
+#   CHECKOV_IMAGE=bridgecrew/checkov@sha256:...
+#   SYFT_IMAGE=anchore/syft@sha256:...
+#   GRYPE_IMAGE=anchore/grype@sha256:...
+#   SCORECARD_IMAGE=gcr.io/openssf/scorecard@sha256:...
+#   COSIGN_IMAGE=ghcr.io/sigstore/cosign@sha256:...
+#   ZAP_IMAGE=owasp/zap2docker-stable@sha256:...
+#   OTEL_COLLECTOR_IMAGE=otel/opentelemetry-collector@sha256:...
+#   HADOLINT_IMAGE=hadolint/hadolint@sha256:...
+
+x-repo-mount: &repo_mount
+  - ./:/repo:ro
+  - ./reports:/out
+
+x-env-common: &env_common
+  TZ: UTC
+
+services:
+  # --- Secrets scanning ---
+  gitleaks:
+    image: "${GITLEAKS_IMAGE:?define GITLEAKS_IMAGE}"
+    environment: *env_common
+    command: detect --source /repo --report-path /out/gitleaks.json --redact --exit-code 1 --no-banner
+    working_dir: /repo
+    volumes: *repo_mount
+    profiles: ["security","precommit"]
+
+  trufflehog:
+    image: "${TRUFFLEHOG_IMAGE:?define TRUFFLEHOG_IMAGE}"
+    environment: *env_common
+    command: filesystem /repo --json --report /out/trufflehog.json --fail
+    working_dir: /repo
+    volumes: *repo_mount
+    profiles: ["security","precommit"]
+
+  # --- SAST (code analysis) ---
+  semgrep:
+    image: "${SEMGREP_IMAGE:?define SEMGREP_IMAGE}"
+    environment: *env_common
+    command: ci --config auto --json --output=/out/semgrep.json
+    working_dir: /repo
+    volumes: *repo_mount
+    profiles: ["security","sast","ci"]
+
+  # --- IaC + dependency + OS vuln scanning ---
+  trivy-fs:
+    image: "${TRIVY_IMAGE:?define TRIVY_IMAGE}"
+    environment: *env_common
+    command: fs --scanners vuln,secret,misconfig --exit-code 1 --format json --output /out/trivy-fs.json /repo
+    working_dir: /repo
+    volumes: *repo_mount
+    profiles: ["security","vuln","ci"]
+
+  checkov:
+    image: "${CHECKOV_IMAGE:?define CHECKOV_IMAGE}"
+    environment: *env_common
+    command: -d /repo -o json --output-file-path /out/checkov.json
+    working_dir: /repo
+    volumes: *repo_mount
+    profiles: ["security","iac","ci"]
+
+  hadolint:
+    image: "${HADOLINT_IMAGE:?define HADOLINT_IMAGE}"
+    environment: *env_common
+    command: sh -lc "hadolint -f json Dockerfile* > /out/hadolint.json || true"
+    working_dir: /repo
+    volumes: *repo_mount
+    profiles: ["security","iac","ci"]
+
+  # --- SBOM (CycloneDX) generation ---
+  syft:
+    image: "${SYFT_IMAGE:?define SYFT_IMAGE}"
+    environment: *env_common
+    command: packages dir:/repo -o cyclonedx-json=/out/sbom.cdx.json
+    working_dir: /repo
+    volumes: *repo_mount
+    profiles: ["supplychain","ci"]
+
+  # --- Vulnerability scan from SBOM ---
+  grype:
+    image: "${GRYPE_IMAGE:?define GRYPE_IMAGE}"
+    environment: *env_common
+    depends_on: ["syft"]
+    command: sbom:/out/sbom.cdx.json -o json --fail-on high --file /out/grype.json
+    working_dir: /repo
+    volumes: *repo_mount
+    profiles: ["supplychain","ci"]
+
+  # --- OpenSSF Scorecard (container mode; GH Action preferred) ---
+  scorecard:
+    image: "${SCORECARD_IMAGE:?define SCORECARD_IMAGE}"
+    environment: *env_common
+    command: >
+      /scorecard --repo=${SCORECARD_REPO:?set github.com/OWNER/REPO}
+                 --checks=All --format=json --show-details
+                 --out=/out/scorecard.json
+    volumes: *repo_mount
+    profiles: ["supplychain","ci","manual"]
+
+  # --- Cosign (manual demonstration) ---
+  cosign:
+    image: "${COSIGN_IMAGE:?define COSIGN_IMAGE}"
+    environment:
+      <<: *env_common
+      COSIGN_EXPERIMENTAL: "1"
+    command: sh -lc "echo 'Use cosign sign ${IMAGE:?set IMAGE} && cosign verify ${IMAGE}'"
+    profiles: ["supplychain","manual"]
+
+  # --- DAST baseline (optional, set TARGET_URL) ---
+  zap-baseline:
+    image: "${ZAP_IMAGE:?define ZAP_IMAGE}"
+    environment: *env_common
+    command: >
+      zap-baseline.py -t ${TARGET_URL:?set TARGET_URL}
+                      -J /out/zap.json -w /out/zap.md -r /out/zap.html
+                      -m 5
+    volumes: *repo_mount
+    profiles: ["security","dast"]
+
+  # --- Observability smoke: OTel Collector ---
+  otel-collector:
+    image: "${OTEL_COLLECTOR_IMAGE:?define OTEL_COLLECTOR_IMAGE}"
+    environment: *env_common
+    command: ["--config", "/etc/otelcol/config.yaml"]
+    volumes:
+      - ./ops/otel/config.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+    profiles: ["observability","ci"]
+
+# Usage (local):
+#   docker compose --env-file .env.guardrails --profile precommit up --exit-code-from gitleaks --abort-on-container-exit
+#   docker compose --env-file .env.guardrails --profile security up --exit-code-from semgrep --abort-on-container-exit
+#   docker compose --env-file .env.guardrails --profile supplychain up --exit-code-from grype --abort-on-container-exit
+#   docker compose --env-file .env.guardrails --profile observability up -d

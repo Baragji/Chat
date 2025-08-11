@@ -1,0 +1,55 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":semanticCommits",
+    ":automergeMinor",
+    ":timezone(UTC)"
+  ],
+  "dependencyDashboard": true,
+  "assignees": [],
+  "labels": ["deps", "renovate"],
+  "rangeStrategy": "auto",
+  "schedule": ["before 6am on monday"],
+  "rebaseWhen": "behind-base-branch",
+  "prConcurrentLimit": 5,
+  "vulnerabilityAlerts": {
+    "labels": ["security"],
+    "automerge": true
+  },
+  "enabledManagers": [
+    "npm",
+    "dockerfile",
+    "github-actions",
+    "pip_requirements",
+    "poetry"
+  ],
+  "packageRules": [
+    {
+      "matchManagers": ["dockerfile"],
+      "pinDigests": true
+    },
+    {
+      "matchManagers": ["npm"],
+      "groupName": "npm minor & patch",
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": true,
+      "minimumReleaseAge": "3 days"
+    },
+    {
+      "matchManagers": ["pip_requirements", "poetry"],
+      "groupName": "python minor & patch",
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": true
+    },
+    {
+      "matchManagers": ["github-actions", "dockerfile"],
+      "automerge": false
+    },
+    {
+      "matchDatasources": ["docker"],
+      "separateMinorPatch": true,
+      "minimumReleaseAge": "3 days"
+    }
+  ]
+}

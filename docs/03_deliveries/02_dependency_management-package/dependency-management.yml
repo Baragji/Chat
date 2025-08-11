@@ -1,0 +1,57 @@
+name: dependency-management
+
+on:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 4 * * 1"  # Mondays 04:00 UTC
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  sca-and-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@v2
+        with:
+          disable-telemetry: true
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java (for OWASP Dependency-Check)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: OWASP Dependency-Check (SCA)
+        uses: dependency-check/Dependency-Check_Action@v4.1.0
+        with:
+          project: "${{ github.repository }}"
+          path: "."
+          format: "JSON"
+          out: "reports"
+          args: >
+            --failOnCVSS 8
+            --nvdApiKey ${{ secrets.NVD_API_KEY }}
+        env:
+          JAVA_HOME: ${{ steps.setup-java.outputs.path }}
+
+      - name: Python vulnerability scan (pip-audit)
+        uses: pypa/gh-action-pip-audit@v1.1.0
+        with:
+          inputs: requirements.txt
+          vulnerability-threshold: high
+        continue-on-error: false
+
+      - name: Upload reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-management-reports
+          path: |
+            reports/

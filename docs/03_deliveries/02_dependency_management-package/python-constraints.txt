@@ -1,0 +1,8 @@
+# Python constraints file (pin known-good versions)
+# Reference in all installs: pip install -r requirements.txt -c constraints/python-constraints.txt
+
+# Example pins (replace with your stack)
+fastapi==0.115.*
+pydantic==2.9.*
+uvicorn==0.30.*
+numpy==2.1.*
