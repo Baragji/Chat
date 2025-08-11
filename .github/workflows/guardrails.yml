@@ -1,0 +1,105 @@
+name: guardrails
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+  security-events: write
+
+jobs:
+  guardrails:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare folders
+        run: mkdir -p reports ops/otel ci-input
+
+      - name: Resolve image digests and write .env.guardrails
+        shell: bash
+        run: |
+          set -euo pipefail
+          pin() { docker pull "$1" >/dev/null; docker inspect --format='{{index .RepoDigests 0}}' "$1"; }
+          echo "GITLEAKS_IMAGE=$(pin zricethezav/gitleaks:v8.18.0)"         >  .env.guardrails
+          echo "TRUFFLEHOG_IMAGE=$(pin trufflesecurity/trufflehog:v3.63.2)" >> .env.guardrails
+          echo "SEMGREP_IMAGE=$(pin semgrep/semgrep:1.50.0)"                >> .env.guardrails
+          echo "TRIVY_IMAGE=$(pin aquasec/trivy:0.51.4)"                    >> .env.guardrails
+          echo "CHECKOV_IMAGE=$(pin bridgecrew/checkov:3.2.354)"            >> .env.guardrails
+          echo "SYFT_IMAGE=$(pin anchore/syft:v1.18.1)"                      >> .env.guardrails
+          echo "GRYPE_IMAGE=$(pin anchore/grype:v0.79.1)"                    >> .env.guardrails
+          echo "SCORECARD_IMAGE=$(pin gcr.io/openssf/scorecard:stable)"      >> .env.guardrails
+          echo "COSIGN_IMAGE=$(pin ghcr.io/sigstore/cosign:v2.4.1)"          >> .env.guardrails
+          echo "ZAP_IMAGE=$(pin owasp/zap2docker-stable:2.15.0)"             >> .env.guardrails
+          echo "OTEL_COLLECTOR_IMAGE=$(pin otel/opentelemetry-collector:0.104.0)" >> .env.guardrails
+          echo "HADOLINT_IMAGE=$(pin hadolint/hadolint:2.12.0)"              >> .env.guardrails
+          echo "OTEL_CLI_IMAGE=$(pin ghcr.io/equinix-labs/otel-cli:v0.4.1)"  >> .env.guardrails
+
+      - name: Write OTel Collector config
+        run: |
+          cat > ops/otel/config.yaml <<'YAML'
+          receivers:
+            otlp:
+              protocols: { grpc: {}, http: {} }
+          processors:
+            batch: {}
+          exporters:
+            logging: {}
+          service:
+            pipelines:
+              traces:
+                receivers: [otlp]
+                processors: [batch]
+                exporters: [logging]
+          YAML
+
+      - name: Start OTel collector
+        run: docker compose --env-file .env.guardrails --profile observability up -d --quiet-pull
+
+      - name: OTLP smoke (otel-cli)
+        run: |
+          docker run --rm --network host $(grep OTEL_CLI_IMAGE .env.guardrails | cut -d= -f2)             --endpoint http://127.0.0.1:4318 --name guardrails-ci --span-name "ci-smoke" --service "guardrails" --timeout 10s
+
+      - name: Secrets scan
+        run: |
+          docker compose --env-file .env.guardrails --profile precommit up --exit-code-from gitleaks --abort-on-container-exit
+          docker compose --env-file .env.guardrails --profile precommit up --exit-code-from trufflehog --abort-on-container-exit
+
+      - name: SAST (Semgrep)
+        run: docker compose --env-file .env.guardrails --profile sast up --exit-code-from semgrep --abort-on-container-exit
+
+      - name: IaC/FS scans (Checkov, Hadolint, Trivy)
+        run: |
+          docker compose --env-file .env.guardrails --profile iac up --exit-code-from checkov --abort-on-container-exit
+          docker compose --env-file .env.guardrails --profile iac up --exit-code-from hadolint --abort-on-container-exit || true
+          docker compose --env-file .env.guardrails --profile vuln up --exit-code-from trivy-fs --abort-on-container-exit
+
+      - name: SBOM + Grype
+        run: |
+          docker compose --env-file .env.guardrails --profile supplychain up --exit-code-from syft --abort-on-container-exit
+          docker compose --env-file .env.guardrails --profile supplychain up --exit-code-from grype --abort-on-container-exit
+
+      - name: Build OPA inputs
+        run: |
+          mkdir -p ci-input
+          test -f reports/sbom.cdx.json && sbom_json=true || sbom_json=false
+          jq -n --argjson has_sbom "$sbom_json" '{build:{sbom_attached:$has_sbom,"slsa_provenance":false,"cosign_verify":"SKIPPED","policy_mode":"dev"}}' > ci-input/build.json
+          echo '{"focus":{"weekly_forecast_usd":0}}' > ci-input/focus.json
+          echo '{"preview_env":{"last_5min_trace_ids":["ci-smoke"]}}' > ci-input/observability.json
+
+      - name: Conftest (OPA)
+        uses: instrumenta/conftest-action@v1
+        with:
+          files: ci-input/*.json
+          policy: opa
+
+      - name: Upload reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: guardrails-reports
+          path: |
+            reports/
+            ci-input/
+            .env.guardrails
